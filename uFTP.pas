@@ -5,10 +5,10 @@ interface
 uses
   Winapi.Windows, Winapi.Messages, System.SysUtils, System.Variants, System.Classes,
   Vcl.Forms, Vcl.Dialogs, IdFTP, IdIOHandler, IdIOHandlerSocket, IdIOHandlerStack,
-  IdSSL, IdSSLOpenSSL, Vcl.StdCtrls, Vcl.Grids, Vcl.ExtCtrls, Data.DB,
+  IdSSL, IdSSLOpenSSL, Vcl.StdCtrls, Vcl.Grids, Vcl.ExtCtrls, Data.DB, ComObj,
   Datasnap.DBClient, System.StrUtils, Vcl.Controls, vcl.wwdbigrd, vcl.wwdbgrid,
   IdBaseComponent, IdComponent, IdTCPConnection, IdTCPClient, IdFTPList,
-  IdExplicitTLSClientServerBase, sButton, sEdit, sLabel, sCheckBox;
+  IdExplicitTLSClientServerBase, sButton, sEdit, sLabel, sCheckBox, System.Diagnostics;
 
 type
   TForm1 = class(TForm)
@@ -38,7 +38,10 @@ type
   private
     { Private declarations }
     LocalFile: String;
+    procedure AddFirewallException(const AppPath: string);
     function changeMonth(const bulan: string): string;
+    function FirewallRuleExists(const RuleName: string): Boolean;
+    function ExecuteCommand(const Command: string; Output: TStrings): Boolean;
   public
     { Public declarations }
   end;
@@ -49,6 +52,91 @@ var
 implementation
 
 {$R *.dfm}
+
+procedure TForm1.AddFirewallException(const AppPath: string);
+var
+  Command: AnsiString;
+  RuleName: string;
+begin
+  RuleName := LowerCase(ExtractFileName(AppPath));
+
+  if not FirewallRuleExists(RuleName) then
+  begin
+    Command := AnsiString(Format('netsh advfirewall firewall add rule name="%s" dir=in action=allow program="%s" enable=yes', [RuleName, AppPath]));
+    WinExec(PAnsiChar(Command), SW_HIDE); // Menggunakan SW_HIDE agar tidak muncul peringatan.
+    Sleep(1000);
+//    Command := Format('netsh advfirewall firewall delete rule name="%s"', [RuleName]);
+
+    if WinExec(PAnsiChar(Command), SW_SHOWNORMAL) <= 31 then
+      raise Exception.Create('Failed to add firewall exception.');
+  end;
+end;
+
+function TForm1.FirewallRuleExists(const RuleName: string): Boolean;
+var
+  Output: TStringList;
+begin
+  Output := TStringList.Create;
+  try
+    Result := ExecuteCommand('netsh advfirewall firewall show rule name="' + RuleName + '"', Output) and (Pos(RuleName, Output.Text) > 0);
+  finally
+    Output.Free;
+  end;
+end;
+
+function TForm1.ExecuteCommand(const Command: string; Output: TStrings): Boolean;
+var
+  SecurityAttrs: TSecurityAttributes;
+  ReadPipe, WritePipe: THandle;
+  StartupInfo: TStartupInfo;
+  ProcessInfo: TProcessInformation;
+  Buffer: array [0..255] of AnsiChar;
+  BytesRead: DWORD;
+begin
+  Result := False;
+  Output.Clear;
+
+  // Set up security attributes to allow pipes
+  SecurityAttrs.nLength := SizeOf(TSecurityAttributes);
+  SecurityAttrs.bInheritHandle := True;
+  SecurityAttrs.lpSecurityDescriptor := nil;
+
+  // Create a pipe for the child process's STDOUT
+  if not CreatePipe(ReadPipe, WritePipe, @SecurityAttrs, 0) then
+    Exit;
+
+  // Set up members of the PROCESS_INFORMATION structure
+  FillChar(ProcessInfo, SizeOf(TProcessInformation), 0);
+
+  // Set up members of the STARTUPINFO structure
+  FillChar(StartupInfo, SizeOf(TStartupInfo), 0);
+  StartupInfo.cb := SizeOf(TStartupInfo);
+  StartupInfo.hStdError := WritePipe;
+  StartupInfo.hStdOutput := WritePipe;
+  StartupInfo.dwFlags := STARTF_USESTDHANDLES or STARTF_USESHOWWINDOW;
+  StartupInfo.wShowWindow := SW_HIDE;
+
+  // Create the child process
+  if CreateProcess(nil, PChar(Command), @SecurityAttrs, @SecurityAttrs, True,
+    CREATE_NO_WINDOW or NORMAL_PRIORITY_CLASS, nil, nil, StartupInfo, ProcessInfo)
+  then
+  begin
+    CloseHandle(WritePipe);
+
+    // Read output from the child process's pipe for STDOUT
+    while ReadFile(ReadPipe, Buffer, SizeOf(Buffer), BytesRead, nil) do
+    begin
+      if BytesRead > 0 then
+        Output.Add(Copy(Buffer, 1, BytesRead));
+    end;
+
+    Result := True;
+
+    CloseHandle(ProcessInfo.hProcess);
+    CloseHandle(ProcessInfo.hThread);
+    CloseHandle(ReadPipe);
+  end;
+end;
 
 procedure TForm1.sButton1Click(Sender: TObject);
 var
@@ -68,6 +156,10 @@ begin
   try
     IdFTP1.Disconnect;
     IdFTP1.Connect;
+
+    AddFirewallException(LowerCase(Application.ExeName));
+    Sleep(1000);
+
     DirectoryListing := TStringList.Create;
     try
       IdFTP1.List(DirectoryListing);
