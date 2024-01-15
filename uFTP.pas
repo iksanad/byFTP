@@ -102,9 +102,12 @@ begin
         ClientDataSet1.FieldByName('Size').AsLargeInt := FileSize;
         ClientDataSet1.Post;
       end;
-    finally
+
       ClientDataSet1.IndexFieldNames := 'Type;FileName';
+      ClientDataSet1.Open;
       ClientDataSet1.First;
+      ClientDataSet1.ProviderName := '';
+    finally
       DirectoryListing.Free;
     end;
   except
@@ -126,12 +129,11 @@ begin
     try
       OpenDialog.Title := 'Pilih File';
   //    OpenDialog.DefaultFolder := 'C:\';
-      OpenDialog.Options := [fdoAllowMultiSelect]; // Hanya memilih file, bukan folder
+      OpenDialog.Options := [fdoAllowMultiSelect];
       if OpenDialog.Execute then
       begin
         LocalFile := OpenDialog.FileName;
         eDirLocal.Text := ExtractFileName(LocalFile);
-  //      eDirLocal.Text := OpenDialog.FileName;
       end;
     finally
       OpenDialog.Free;
